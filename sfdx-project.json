@@ -1,0 +1,11 @@
+{
+  "packageDirectories": [
+    {
+      "path": "force-app",
+      "default": true
+    }
+  ],
+  "name": "sf-error-logging",
+  "namespace": "",
+  "sourceApiVersion": "62.0"
+}
