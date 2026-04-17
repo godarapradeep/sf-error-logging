@@ -48,6 +48,16 @@ When `allOrNone=true`, Salesforce throws `DmlException` before returning results
 6. `Database.DMLOptions` support
 7. Platform Event fallback for durable error logging
 
+## Authenticating
+
+The `SFDX_AUTH_URL` env var is available in this environment. Use it to authenticate before deploying or running tests:
+
+```bash
+sf org login sfdx-url -f <(echo "$SFDX_AUTH_URL") -a target-org -s
+```
+
+Note: `--sfdx-url-stdin` (`-u`) does not accept an inline value — it must come from a file or process substitution as shown above.
+
 ## Running tests
 
 ```bash
