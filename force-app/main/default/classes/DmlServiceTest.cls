@@ -26,6 +26,8 @@ private class DmlServiceTest {
         Account good = new Account(Name = 'Good Account');
         Account bad  = new Account(); // missing required Name
 
+        DmlService.clearRecentLogIds();
+
         Test.startTest();
         Database.SaveResult[] results = DmlService.insertRecords(
             new List<Account>{ good, bad }
@@ -37,7 +39,8 @@ private class DmlServiceTest {
         Assert.isFalse(results[1].isSuccess());
 
         List<Error_Log__c> logs = [
-            SELECT Operation__c, Object_Type__c, Error_Count__c, Status__c
+            SELECT Operation__c, Object_Type__c, Error_Count__c, Status__c,
+                   Running_User__c, Transaction_Id__c, Status_Code__c
             FROM Error_Log__c
         ];
         Assert.areEqual(1, logs.size(), 'Expected one log entry per method call');
@@ -45,7 +48,47 @@ private class DmlServiceTest {
         Assert.areEqual('Account', logs[0].Object_Type__c);
         Assert.areEqual(1, (Integer) logs[0].Error_Count__c);
         Assert.areEqual('Open', logs[0].Status__c);
+        Assert.areEqual(UserInfo.getUserId(), logs[0].Running_User__c);
+        Assert.isNotNull(logs[0].Transaction_Id__c);
+        Assert.isFalse(String.isBlank(logs[0].Status_Code__c));
+        Assert.isNotNull(logs[0].Stack_Trace__c);
         Assert.areEqual(1, [SELECT COUNT() FROM ContentDocumentLink WHERE LinkedEntityId = :logs[0].Id]);
+
+        Assert.areEqual(1, DmlService.recentLogIds.size());
+        Assert.areEqual(logs[0].Id, DmlService.recentLogIds[0]);
+    }
+
+    @IsTest
+    static void insertRecords_partial_payloadContainsErrorDetails() {
+        Account bad = new Account(); // missing required Name
+
+        Test.startTest();
+        DmlService.insertRecords(new List<Account>{ bad });
+        Test.stopTest();
+
+        Error_Log__c log = [SELECT Id FROM Error_Log__c LIMIT 1];
+        ContentDocumentLink cdl = [
+            SELECT ContentDocument.LatestPublishedVersionId
+            FROM ContentDocumentLink
+            WHERE LinkedEntityId = :log.Id
+            LIMIT 1
+        ];
+        ContentVersion cv = [
+            SELECT VersionData
+            FROM ContentVersion
+            WHERE Id = :cdl.ContentDocument.LatestPublishedVersionId
+        ];
+
+        Map<String, Object> payload = (Map<String, Object>) JSON.deserializeUntyped(cv.VersionData.toString());
+        Assert.isTrue(payload.containsKey('records'));
+        Assert.isTrue(payload.containsKey('errors'));
+
+        List<Object> errors = (List<Object>) payload.get('errors');
+        Assert.areEqual(1, errors.size());
+
+        Map<String, Object> errorDetail = (Map<String, Object>) errors[0];
+        List<Object> statusCodes = (List<Object>) errorDetail.get('statusCodes');
+        Assert.isFalse(statusCodes.isEmpty());
     }
 
     @IsTest
@@ -70,6 +113,39 @@ private class DmlServiceTest {
 
         Assert.areEqual(0, results.size());
         Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
+    }
+
+    @IsTest
+    static void insertRecords_dmlOptions_success_noLogs() {
+        Database.DMLOptions opts = new Database.DMLOptions();
+        opts.allowFieldTruncation = true;
+
+        Test.startTest();
+        Database.SaveResult[] results = DmlService.insertRecords(
+            new List<Account>{ new Account(Name = 'DMLOptions Test') },
+            opts
+        );
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
+    }
+
+    @IsTest
+    static void insertRecords_dmlOptions_partial_logsOneEntry() {
+        Database.DMLOptions opts = new Database.DMLOptions();
+        opts.allowFieldTruncation = true;
+
+        Test.startTest();
+        Database.SaveResult[] results = DmlService.insertRecords(
+            new List<Account>{ new Account(Name = 'Good'), new Account() },
+            opts
+        );
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.isFalse(results[1].isSuccess());
+        Assert.areEqual(1, [SELECT COUNT() FROM Error_Log__c WHERE Operation__c = 'INSERT']);
     }
 
     // ── UPDATE ───────────────────────────────────────────────────────────────
@@ -120,9 +196,54 @@ private class DmlServiceTest {
             DmlService.updateRecords(new List<Account>{ ghost }, true);
             Assert.fail('Expected DmlException not thrown');
         } catch (DmlException e) {
-            Assert.isNotNull(e.getMessage());
+            Assert.isTrue(
+                e.getMessage().contains('ENTITY_IS_DELETED') ||
+                e.getMessage().contains('INVALID_CROSS_REFERENCE_KEY') ||
+                e.getMessage().contains('NOT_FOUND') ||
+                e.getNumDml() > 0,
+                'Expected a DML error for non-existent record, got: ' + e.getMessage()
+            );
         }
         Test.stopTest();
+    }
+
+    @IsTest
+    static void updateRecords_dmlOptions_success_noLogs() {
+        Account a = new Account(Name = 'Before');
+        insert a;
+        a.Name = 'After';
+
+        Database.DMLOptions opts = new Database.DMLOptions();
+        opts.allowFieldTruncation = true;
+
+        Test.startTest();
+        Database.SaveResult[] results = DmlService.updateRecords(new List<Account>{ a }, opts);
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
+    }
+
+    @IsTest
+    static void updateRecords_dmlOptions_partial_logsOneEntry() {
+        Account real = new Account(Name = 'Real');
+        insert real;
+
+        Account ghost = new Account(Id = '001000000000000AAA', Name = 'Ghost');
+
+        Database.DMLOptions opts = new Database.DMLOptions();
+        opts.allowFieldTruncation = true;
+
+        Test.startTest();
+        Database.SaveResult[] results = DmlService.updateRecords(
+            new List<Account>{ real, ghost },
+            opts
+        );
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.isFalse(results[1].isSuccess());
+        Assert.areEqual(1, [SELECT COUNT() FROM Error_Log__c WHERE Operation__c = 'UPDATE']);
     }
 
     // ── UPSERT ───────────────────────────────────────────────────────────────
@@ -175,6 +296,48 @@ private class DmlServiceTest {
         Test.stopTest();
     }
 
+    @IsTest
+    static void upsertRecords_nullInput_returnsEmpty() {
+        Test.startTest();
+        Database.UpsertResult[] results = DmlService.upsertRecords(null);
+        Test.stopTest();
+
+        Assert.areEqual(0, results.size());
+        Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
+    }
+
+    @IsTest
+    static void upsertRecords_externalIdField_success_noLogs() {
+        Account a = new Account(Name = 'ExternalId Upsert');
+
+        Test.startTest();
+        Database.UpsertResult[] results = DmlService.upsertRecords(
+            new List<Account>{ a },
+            Account.Name
+        );
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
+    }
+
+    @IsTest
+    static void upsertRecords_externalIdField_partial_logsOneEntry() {
+        Account good = new Account(Name = 'Good ExternalId');
+        Account bad  = new Account(); // missing Name (the external ID field)
+
+        Test.startTest();
+        Database.UpsertResult[] results = DmlService.upsertRecords(
+            new List<Account>{ good, bad },
+            Account.Name
+        );
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.isFalse(results[1].isSuccess());
+        Assert.areEqual(1, [SELECT COUNT() FROM Error_Log__c WHERE Operation__c = 'UPSERT']);
+    }
+
     // ── DELETE ───────────────────────────────────────────────────────────────
 
     @IsTest
@@ -222,8 +385,42 @@ private class DmlServiceTest {
             DmlService.deleteRecords(new List<Account>{ ghost }, true);
             Assert.fail('Expected DmlException not thrown');
         } catch (DmlException e) {
-            Assert.isNotNull(e.getMessage());
+            Assert.isTrue(
+                e.getMessage().contains('ENTITY_IS_DELETED') ||
+                e.getMessage().contains('INVALID_CROSS_REFERENCE_KEY') ||
+                e.getMessage().contains('NOT_FOUND') ||
+                e.getNumDml() > 0,
+                'Expected a DML error for non-existent record, got: ' + e.getMessage()
+            );
         }
         Test.stopTest();
+    }
+
+    @IsTest
+    static void deleteRecords_nullInput_returnsEmpty() {
+        Test.startTest();
+        Database.DeleteResult[] results = DmlService.deleteRecords(null);
+        Test.stopTest();
+
+        Assert.areEqual(0, results.size());
+        Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
+    }
+
+    // ── clearRecentLogIds ─────────────────────────────────────────────────────
+
+    @IsTest
+    static void clearRecentLogIds_clearsAccumulatedIds() {
+        Account bad = new Account();
+
+        DmlService.clearRecentLogIds();
+
+        Test.startTest();
+        DmlService.insertRecords(new List<Account>{ bad });
+        Test.stopTest();
+
+        Assert.areEqual(1, DmlService.recentLogIds.size(), 'Expected one log id after a failed insert');
+
+        DmlService.clearRecentLogIds();
+        Assert.areEqual(0, DmlService.recentLogIds.size(), 'Expected empty list after clear');
     }
 }
