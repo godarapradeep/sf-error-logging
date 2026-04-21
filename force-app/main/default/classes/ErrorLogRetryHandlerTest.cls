@@ -1,12 +1,8 @@
 @IsTest
-private class DmlRetryQueueableTest {
+private class ErrorLogRetryHandlerTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /**
-     * Builds an Error_Log__c with a JSON attachment without going through
-     * DmlService, so tests control exactly what's in the payload.
-     */
     private static Error_Log__c buildLog(
         String operation,
         String objectType,
@@ -17,8 +13,7 @@ private class DmlRetryQueueableTest {
             Object_Type__c = objectType,
             Operation__c   = operation,
             Error_Count__c = records.size(),
-            Status__c      = 'Open',
-            Retry_Count__c = 0
+            Status__c      = 'Open'
         );
         insert log;
 
@@ -57,7 +52,6 @@ private class DmlRetryQueueableTest {
 
     @IsTest
     static void retry_insertSuccess_resolvesLog() {
-        // Account with a name — will succeed on INSERT retry
         Account a = new Account(Name = 'Retry Insert');
         Error_Log__c log = buildLog(
             'INSERT', 'Account',
@@ -66,18 +60,16 @@ private class DmlRetryQueueableTest {
         );
 
         Test.startTest();
-        new DmlRetryQueueable(log.Id).execute(null);
+        ErrorLogRetryHandler.handleRetry(new List<Error_Log__c>{ log });
         Test.stopTest();
 
-        log = [SELECT Status__c, Retry_Count__c FROM Error_Log__c WHERE Id = :log.Id];
+        log = [SELECT Status__c FROM Error_Log__c WHERE Id = :log.Id];
         Assert.areEqual('Resolved', log.Status__c);
-        Assert.areEqual(1, (Integer) log.Retry_Count__c);
         Assert.areEqual(1, [SELECT COUNT() FROM Account WHERE Name = 'Retry Insert']);
     }
 
     @IsTest
-    static void retry_updateFailure_failsLog() {
-        // Ghost Id — update will fail
+    static void retry_updateFailure_failsLog_andLinksChildLog() {
         Account ghost = new Account(Id = '001000000000000AAA', Name = 'Ghost');
         Error_Log__c log = buildLog(
             'UPDATE', 'Account',
@@ -86,48 +78,28 @@ private class DmlRetryQueueableTest {
         );
 
         Test.startTest();
-        new DmlRetryQueueable(log.Id).execute(null);
+        ErrorLogRetryHandler.handleRetry(new List<Error_Log__c>{ log });
         Test.stopTest();
 
-        log = [SELECT Status__c, Retry_Count__c FROM Error_Log__c WHERE Id = :log.Id];
+        log = [SELECT Status__c FROM Error_Log__c WHERE Id = :log.Id];
         Assert.areEqual('Failed', log.Status__c);
-        Assert.areEqual(1, (Integer) log.Retry_Count__c);
-    }
 
-    @IsTest
-    static void retry_retryCountIncrementsFromExisting() {
-        Account ghost = new Account(Id = '001000000000000AAA', Name = 'Ghost');
-        Error_Log__c log = buildLog(
-            'UPDATE', 'Account',
-            new List<SObject>{ ghost },
-            new List<Map<String, Object>>{ stubError('001000000000000AAA') }
-        );
-        // Simulate log already having 2 prior retries
-        log.Retry_Count__c = 2;
-        update log;
-
-        Test.startTest();
-        new DmlRetryQueueable(log.Id).execute(null);
-        Test.stopTest();
-
-        log = [SELECT Retry_Count__c FROM Error_Log__c WHERE Id = :log.Id];
-        Assert.areEqual(3, (Integer) log.Retry_Count__c);
+        List<Error_Log__c> children = [SELECT Parent_Log__c FROM Error_Log__c WHERE Parent_Log__c = :log.Id];
+        Assert.areEqual(1, children.size(), 'child log should be linked to parent');
     }
 
     @IsTest
     static void retry_noAttachment_failsLog() {
-        // Log with no ContentDocumentLink — queueable should set Failed, not throw
         Error_Log__c log = new Error_Log__c(
             Object_Type__c = 'Account',
             Operation__c   = 'INSERT',
             Error_Count__c = 1,
-            Status__c      = 'Open',
-            Retry_Count__c = 0
+            Status__c      = 'Open'
         );
         insert log;
 
         Test.startTest();
-        new DmlRetryQueueable(log.Id).execute(null);
+        ErrorLogRetryHandler.handleRetry(new List<Error_Log__c>{ log });
         Test.stopTest();
 
         log = [SELECT Status__c FROM Error_Log__c WHERE Id = :log.Id];
@@ -135,8 +107,7 @@ private class DmlRetryQueueableTest {
     }
 
     @IsTest
-    static void statusChange_toRetry_triggersQueueable() {
-        // Uses the trigger path; queueable runs after Test.stopTest()
+    static void statusChange_toRetry_fromOpen_triggersHandler() {
         Account a = new Account(Name = 'Trigger Retry');
         Error_Log__c log = buildLog(
             'INSERT', 'Account',
@@ -147,10 +118,32 @@ private class DmlRetryQueueableTest {
         Test.startTest();
         log.Status__c = 'Retry';
         update log;
-        Test.stopTest(); // queueable executes here
+        Test.stopTest();
 
         log = [SELECT Status__c FROM Error_Log__c WHERE Id = :log.Id];
         Assert.areEqual('Resolved', log.Status__c);
         Assert.areEqual(1, [SELECT COUNT() FROM Account WHERE Name = 'Trigger Retry']);
+    }
+
+    @IsTest
+    static void statusChange_toRetry_fromFailed_isIgnored() {
+        Account a = new Account(Name = 'No Re-Retry');
+        Error_Log__c log = buildLog(
+            'INSERT', 'Account',
+            new List<SObject>{ a },
+            new List<Map<String, Object>>{ stubError(null) }
+        );
+        log.Status__c = 'Failed';
+        update log;
+
+        Test.startTest();
+        log.Status__c = 'Retry';
+        update log;
+        Test.stopTest();
+
+        // Status should stay 'Retry' — trigger did not fire the handler
+        log = [SELECT Status__c FROM Error_Log__c WHERE Id = :log.Id];
+        Assert.areEqual('Retry', log.Status__c);
+        Assert.areEqual(0, [SELECT COUNT() FROM Account WHERE Name = 'No Re-Retry']);
     }
 }

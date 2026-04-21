@@ -9,6 +9,10 @@
  */
 public without sharing class DmlService {
 
+    // Populated by persistLog so callers (e.g. ErrorLogRetryHandler) can link
+    // newly created Error_Log__c records back to a parent. Clear before use.
+    public static List<Id> recentLogIds = new List<Id>();
+
     private static final String OP_INSERT = 'INSERT';
     private static final String OP_UPDATE = 'UPDATE';
     private static final String OP_UPSERT = 'UPSERT';
@@ -180,6 +184,7 @@ public without sharing class DmlService {
             System.debug(LoggingLevel.ERROR, 'DmlService: failed to insert Error_Log__c: ' + logResult.getErrors());
             return;
         }
+        recentLogIds.add(log.Id);
         attachPayload(log.Id, failedRecords, errorDetails);
     }
 
