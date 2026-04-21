@@ -13,8 +13,7 @@ private class ErrorLogRetryHandlerTest {
             Object_Type__c = objectType,
             Operation__c   = operation,
             Error_Count__c = records.size(),
-            Status__c      = 'Open',
-            Retry_Count__c = 0
+            Status__c      = 'Open'
         );
         insert log;
 
@@ -64,14 +63,13 @@ private class ErrorLogRetryHandlerTest {
         ErrorLogRetryHandler.handleRetry(new List<Error_Log__c>{ log });
         Test.stopTest();
 
-        log = [SELECT Status__c, Retry_Count__c FROM Error_Log__c WHERE Id = :log.Id];
+        log = [SELECT Status__c FROM Error_Log__c WHERE Id = :log.Id];
         Assert.areEqual('Resolved', log.Status__c);
-        Assert.areEqual(1, (Integer) log.Retry_Count__c);
         Assert.areEqual(1, [SELECT COUNT() FROM Account WHERE Name = 'Retry Insert']);
     }
 
     @IsTest
-    static void retry_updateFailure_failsLog() {
+    static void retry_updateFailure_failsLog_andLinksChildLog() {
         Account ghost = new Account(Id = '001000000000000AAA', Name = 'Ghost');
         Error_Log__c log = buildLog(
             'UPDATE', 'Account',
@@ -83,28 +81,11 @@ private class ErrorLogRetryHandlerTest {
         ErrorLogRetryHandler.handleRetry(new List<Error_Log__c>{ log });
         Test.stopTest();
 
-        log = [SELECT Status__c, Retry_Count__c FROM Error_Log__c WHERE Id = :log.Id];
+        log = [SELECT Status__c FROM Error_Log__c WHERE Id = :log.Id];
         Assert.areEqual('Failed', log.Status__c);
-        Assert.areEqual(1, (Integer) log.Retry_Count__c);
-    }
 
-    @IsTest
-    static void retry_retryCountIncrementsFromExisting() {
-        Account ghost = new Account(Id = '001000000000000AAA', Name = 'Ghost');
-        Error_Log__c log = buildLog(
-            'UPDATE', 'Account',
-            new List<SObject>{ ghost },
-            new List<Map<String, Object>>{ stubError('001000000000000AAA') }
-        );
-        log.Retry_Count__c = 2;
-        update log;
-
-        Test.startTest();
-        ErrorLogRetryHandler.handleRetry(new List<Error_Log__c>{ log });
-        Test.stopTest();
-
-        log = [SELECT Retry_Count__c FROM Error_Log__c WHERE Id = :log.Id];
-        Assert.areEqual(3, (Integer) log.Retry_Count__c);
+        List<Error_Log__c> children = [SELECT Parent_Log__c FROM Error_Log__c WHERE Parent_Log__c = :log.Id];
+        Assert.areEqual(1, children.size(), 'child log should be linked to parent');
     }
 
     @IsTest
@@ -113,8 +94,7 @@ private class ErrorLogRetryHandlerTest {
             Object_Type__c = 'Account',
             Operation__c   = 'INSERT',
             Error_Count__c = 1,
-            Status__c      = 'Open',
-            Retry_Count__c = 0
+            Status__c      = 'Open'
         );
         insert log;
 
@@ -127,7 +107,7 @@ private class ErrorLogRetryHandlerTest {
     }
 
     @IsTest
-    static void statusChange_toRetry_triggersHandler() {
+    static void statusChange_toRetry_fromOpen_triggersHandler() {
         Account a = new Account(Name = 'Trigger Retry');
         Error_Log__c log = buildLog(
             'INSERT', 'Account',
@@ -143,5 +123,27 @@ private class ErrorLogRetryHandlerTest {
         log = [SELECT Status__c FROM Error_Log__c WHERE Id = :log.Id];
         Assert.areEqual('Resolved', log.Status__c);
         Assert.areEqual(1, [SELECT COUNT() FROM Account WHERE Name = 'Trigger Retry']);
+    }
+
+    @IsTest
+    static void statusChange_toRetry_fromFailed_isIgnored() {
+        Account a = new Account(Name = 'No Re-Retry');
+        Error_Log__c log = buildLog(
+            'INSERT', 'Account',
+            new List<SObject>{ a },
+            new List<Map<String, Object>>{ stubError(null) }
+        );
+        log.Status__c = 'Failed';
+        update log;
+
+        Test.startTest();
+        log.Status__c = 'Retry';
+        update log;
+        Test.stopTest();
+
+        // Status should stay 'Retry' — trigger did not fire the handler
+        log = [SELECT Status__c FROM Error_Log__c WHERE Id = :log.Id];
+        Assert.areEqual('Retry', log.Status__c);
+        Assert.areEqual(0, [SELECT COUNT() FROM Account WHERE Name = 'No Re-Retry']);
     }
 }

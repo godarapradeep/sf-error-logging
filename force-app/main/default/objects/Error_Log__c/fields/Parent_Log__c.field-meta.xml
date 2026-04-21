@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Parent_Log__c</fullName>
+    <label>Parent Log</label>
+    <type>Lookup</type>
+    <referenceTo>Error_Log__c</referenceTo>
+    <relationshipLabel>Child Logs</relationshipLabel>
+    <relationshipName>Child_Logs</relationshipName>
+    <externalId>false</externalId>
+    <required>false</required>
+</CustomField>

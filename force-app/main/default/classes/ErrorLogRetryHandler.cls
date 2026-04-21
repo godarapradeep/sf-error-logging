@@ -25,7 +25,9 @@ public class ErrorLogRetryHandler {
             }
         }
 
-        List<Error_Log__c> toUpdate = new List<Error_Log__c>();
+        List<Error_Log__c> toUpdate  = new List<Error_Log__c>();
+        List<Error_Log__c> toLink    = new List<Error_Log__c>();
+
         for (Error_Log__c log : logs) {
             String jsonStr = payloadByLogId.get(log.Id);
             Boolean allSuccess = false;
@@ -40,18 +42,26 @@ public class ErrorLogRetryHandler {
                     Map<String, Object> payload = (Map<String, Object>) JSON.deserializeUntyped(jsonStr);
                     List<Object> rawRecords = (List<Object>) payload.get('records');
                     List<SObject> records = (List<SObject>) JSON.deserialize(JSON.serialize(rawRecords), listType);
+
+                    DmlService.recentLogIds.clear();
                     allSuccess = runOperation(log.Operation__c, records);
+
+                    for (Id childId : DmlService.recentLogIds) {
+                        toLink.add(new Error_Log__c(Id = childId, Parent_Log__c = log.Id));
+                    }
                 }
             }
 
             toUpdate.add(new Error_Log__c(
-                Id             = log.Id,
-                Status__c      = allSuccess ? 'Resolved' : 'Failed',
-                Retry_Count__c = (log.Retry_Count__c == null ? 0 : log.Retry_Count__c) + 1
+                Id        = log.Id,
+                Status__c = allSuccess ? 'Resolved' : 'Failed'
             ));
         }
 
         update toUpdate;
+        if (!toLink.isEmpty()) {
+            update toLink;
+        }
     }
 
     private static Boolean runOperation(String operation, List<SObject> records) {
