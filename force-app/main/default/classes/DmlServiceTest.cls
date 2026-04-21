@@ -50,7 +50,8 @@ private class DmlServiceTest {
         Assert.areEqual('Open', logs[0].Status__c);
         Assert.areEqual(UserInfo.getUserId(), logs[0].Running_User__c);
         Assert.isNotNull(logs[0].Transaction_Id__c);
-        Assert.isNotNull(logs[0].Status_Code__c);
+        Assert.isFalse(String.isBlank(logs[0].Status_Code__c));
+        Assert.isNotNull(logs[0].Stack_Trace__c);
         Assert.areEqual(1, [SELECT COUNT() FROM ContentDocumentLink WHERE LinkedEntityId = :logs[0].Id]);
 
         Assert.areEqual(1, DmlService.recentLogIds.size());
@@ -114,6 +115,39 @@ private class DmlServiceTest {
         Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
     }
 
+    @IsTest
+    static void insertRecords_dmlOptions_success_noLogs() {
+        Database.DMLOptions opts = new Database.DMLOptions();
+        opts.allowFieldTruncation = true;
+
+        Test.startTest();
+        Database.SaveResult[] results = DmlService.insertRecords(
+            new List<Account>{ new Account(Name = 'DMLOptions Test') },
+            opts
+        );
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
+    }
+
+    @IsTest
+    static void insertRecords_dmlOptions_partial_logsOneEntry() {
+        Database.DMLOptions opts = new Database.DMLOptions();
+        opts.allowFieldTruncation = true;
+
+        Test.startTest();
+        Database.SaveResult[] results = DmlService.insertRecords(
+            new List<Account>{ new Account(Name = 'Good'), new Account() },
+            opts
+        );
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.isFalse(results[1].isSuccess());
+        Assert.areEqual(1, [SELECT COUNT() FROM Error_Log__c WHERE Operation__c = 'INSERT']);
+    }
+
     // ── UPDATE ───────────────────────────────────────────────────────────────
 
     @IsTest
@@ -171,6 +205,45 @@ private class DmlServiceTest {
             );
         }
         Test.stopTest();
+    }
+
+    @IsTest
+    static void updateRecords_dmlOptions_success_noLogs() {
+        Account a = new Account(Name = 'Before');
+        insert a;
+        a.Name = 'After';
+
+        Database.DMLOptions opts = new Database.DMLOptions();
+        opts.allowFieldTruncation = true;
+
+        Test.startTest();
+        Database.SaveResult[] results = DmlService.updateRecords(new List<Account>{ a }, opts);
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
+    }
+
+    @IsTest
+    static void updateRecords_dmlOptions_partial_logsOneEntry() {
+        Account real = new Account(Name = 'Real');
+        insert real;
+
+        Account ghost = new Account(Id = '001000000000000AAA', Name = 'Ghost');
+
+        Database.DMLOptions opts = new Database.DMLOptions();
+        opts.allowFieldTruncation = true;
+
+        Test.startTest();
+        Database.SaveResult[] results = DmlService.updateRecords(
+            new List<Account>{ real, ghost },
+            opts
+        );
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.isFalse(results[1].isSuccess());
+        Assert.areEqual(1, [SELECT COUNT() FROM Error_Log__c WHERE Operation__c = 'UPDATE']);
     }
 
     // ── UPSERT ───────────────────────────────────────────────────────────────
@@ -231,6 +304,38 @@ private class DmlServiceTest {
 
         Assert.areEqual(0, results.size());
         Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
+    }
+
+    @IsTest
+    static void upsertRecords_externalIdField_success_noLogs() {
+        Account a = new Account(Name = 'ExternalId Upsert');
+
+        Test.startTest();
+        Database.UpsertResult[] results = DmlService.upsertRecords(
+            new List<Account>{ a },
+            Account.Name
+        );
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.areEqual(0, [SELECT COUNT() FROM Error_Log__c]);
+    }
+
+    @IsTest
+    static void upsertRecords_externalIdField_partial_logsOneEntry() {
+        Account good = new Account(Name = 'Good ExternalId');
+        Account bad  = new Account(); // missing Name (the external ID field)
+
+        Test.startTest();
+        Database.UpsertResult[] results = DmlService.upsertRecords(
+            new List<Account>{ good, bad },
+            Account.Name
+        );
+        Test.stopTest();
+
+        Assert.isTrue(results[0].isSuccess());
+        Assert.isFalse(results[1].isSuccess());
+        Assert.areEqual(1, [SELECT COUNT() FROM Error_Log__c WHERE Operation__c = 'UPSERT']);
     }
 
     // ── DELETE ───────────────────────────────────────────────────────────────
