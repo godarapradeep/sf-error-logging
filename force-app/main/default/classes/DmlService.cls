@@ -174,7 +174,7 @@ public inherited sharing class DmlService {
         }
         if (!failed.isEmpty()) {
             String typeName = String.join(new List<String>(typeNames), ', ').left(255);
-            LogWriter.write(typeName, operation, failed, details);
+            new LogWriter().write(typeName, operation, failed, details);
         }
     }
 
@@ -210,7 +210,7 @@ public inherited sharing class DmlService {
 
     private without sharing class LogWriter {
 
-        public static void write(
+        public void write(
             String typeName,
             String operation,
             List<SObject> failedRecords,
@@ -231,7 +231,7 @@ public inherited sharing class DmlService {
                 Status__c         = 'Open',
                 Running_User__c   = UserInfo.getUserId(),
                 Stack_Trace__c    = new DmlException().getStackTraceString(),
-                Transaction_Id__c = Request.getRequestId() ?? '',
+                Transaction_Id__c = System.Request.getCurrent().getRequestId() ?? '',
                 Status_Code__c    = firstStatusCode
             );
             Database.SaveResult logResult = Database.insert(log, false);
@@ -243,7 +243,7 @@ public inherited sharing class DmlService {
             attachPayload(log.Id, failedRecords, errorDetails);
         }
 
-        private static void attachPayload(
+        private void attachPayload(
             Id logId,
             List<SObject> failedRecords,
             List<Map<String, Object>> errorDetails

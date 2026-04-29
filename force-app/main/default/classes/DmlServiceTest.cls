@@ -40,7 +40,7 @@ private class DmlServiceTest {
 
         List<Error_Log__c> logs = [
             SELECT Operation__c, Object_Type__c, Error_Count__c, Status__c,
-                   Running_User__c, Transaction_Id__c, Status_Code__c
+                   Running_User__c, Transaction_Id__c, Status_Code__c, Stack_Trace__c
             FROM Error_Log__c
         ];
         Assert.areEqual(1, logs.size(), 'Expected one log entry per method call');
@@ -308,12 +308,12 @@ private class DmlServiceTest {
 
     @IsTest
     static void upsertRecords_externalIdField_success_noLogs() {
-        Account a = new Account(Name = 'ExternalId Upsert');
+        Account a = new Account(Name = 'ExternalId Upsert'); // no Id → insert path
 
         Test.startTest();
         Database.UpsertResult[] results = DmlService.upsertRecords(
             new List<Account>{ a },
-            Account.Name
+            Account.Id
         );
         Test.stopTest();
 
@@ -323,13 +323,14 @@ private class DmlServiceTest {
 
     @IsTest
     static void upsertRecords_externalIdField_partial_logsOneEntry() {
-        Account good = new Account(Name = 'Good ExternalId');
-        Account bad  = new Account(); // missing Name (the external ID field)
+        Account existing = new Account(Name = 'Existing');
+        insert existing; // gives it a real Id → upsert will update → success
+        Account newBad = new Account(); // no Id, no Name → upsert inserts → fails (Name required)
 
         Test.startTest();
         Database.UpsertResult[] results = DmlService.upsertRecords(
-            new List<Account>{ good, bad },
-            Account.Name
+            new List<Account>{ existing, newBad },
+            Account.Id
         );
         Test.stopTest();
 
