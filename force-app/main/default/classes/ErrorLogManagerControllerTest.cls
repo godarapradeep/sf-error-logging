@@ -56,6 +56,19 @@ private class ErrorLogManagerControllerTest {
         Assert.isNull(result);
     }
 
+    @IsTest
+    static void getLogPayload_multipleAttachments_returnsLatest() {
+        Error_Log__c log = insertLog();
+        attachPayload(log.Id, '{"records":[],"errors":[],"version":1}');
+        attachPayload(log.Id, '{"records":[],"errors":[],"version":2}');
+
+        Test.startTest();
+        String result = ErrorLogManagerController.getLogPayload(log.Id);
+        Test.stopTest();
+
+        Assert.isTrue(result.contains('"version":2'), 'expected the latest attachment to be returned');
+    }
+
     // ── updatePayloadAndRetry ─────────────────────────────────────────────────
 
     @IsTest
@@ -86,5 +99,21 @@ private class ErrorLogManagerControllerTest {
 
         log = [SELECT Status__c FROM Error_Log__c WHERE Id = :log.Id];
         Assert.areEqual('Retry', log.Status__c);
+    }
+
+    @IsTest
+    static void updatePayloadAndRetry_invalidLogId_throwsAuraHandledException() {
+        // Fabricate a well-formed but non-existent Error_Log__c Id so the update DML fails.
+        Id bogusId = Error_Log__c.SObjectType.getDescribe().getKeyPrefix() + '000000000001AAA';
+        String payload = '{"records":[],"errors":[]}';
+
+        Test.startTest();
+        try {
+            ErrorLogManagerController.updatePayloadAndRetry(bogusId, payload);
+            Assert.fail('expected AuraHandledException');
+        } catch (AuraHandledException e) {
+            // reaching here confirms the exception was wrapped and re-thrown correctly
+        }
+        Test.stopTest();
     }
 }
